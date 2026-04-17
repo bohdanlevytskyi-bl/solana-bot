@@ -3,6 +3,7 @@ dotenv.config();
 
 export type ExecutionMode = "paper" | "production";
 export type SnipeMode = "aggressive" | "filtered";
+export type ExitBehavior = "keep" | "sell";
 
 export interface BotConfig {
   rpcUrl: string;
@@ -15,6 +16,7 @@ export interface BotConfig {
   takeProfitPct: number;
   stopLossPct: number;
   priorityFeeLamports: number;
+  exitBehavior: ExitBehavior;
 }
 
 function requireEnv(key: string): string {
@@ -47,6 +49,13 @@ export function loadConfig(): BotConfig {
     );
   }
 
+  const exitBehavior = (process.env.EXIT_BEHAVIOR || "keep") as ExitBehavior;
+  if (exitBehavior !== "keep" && exitBehavior !== "sell") {
+    throw new Error(
+      `Invalid EXIT_BEHAVIOR: "${exitBehavior}". Must be "keep" or "sell".`
+    );
+  }
+
   return {
     rpcUrl: requireEnv("RPC_URL"),
     wssUrl: requireEnv("WSS_URL"),
@@ -61,5 +70,6 @@ export function loadConfig(): BotConfig {
       process.env.PRIORITY_FEE_LAMPORTS || "100000",
       10
     ),
+    exitBehavior,
   };
 }

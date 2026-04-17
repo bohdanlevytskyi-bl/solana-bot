@@ -5,6 +5,9 @@ import { PumpFunMonitor, NewTokenEvent } from "./monitor";
 import { TokenFilter } from "./filters";
 import { createTrader, PaperTrader } from "./trading";
 import { PositionManager } from "./positions";
+import { Dashboard } from "./dashboard";
+import { stats } from "./stats";
+import { DB } from "./db";
 import * as readline from "readline";
 
 async function confirmProduction(): Promise<void> {
@@ -33,7 +36,10 @@ async function main(): Promise<void> {
   // Load configuration
   const config = loadConfig();
 
-  // Display startup banner
+  // Initialize database
+  const db = new DB();
+
+  // Display startup banner (before dashboard takes over)
   log.banner([
     "╔══════════════════════════════════════════╗",
     "║       Pump.fun Sniper Bot v1.0.0         ║",
@@ -43,19 +49,14 @@ async function main(): Promise<void> {
   log.info(`Execution mode : ${config.mode.toUpperCase()}`);
   log.info(`Sniping mode   : ${config.snipeMode}`);
   log.info(`Buy amount     : ${config.buyAmountSol} SOL`);
-  log.info(`Slippage       : ${config.slippagePct}%`);
-  log.info(`Take profit    : ${config.takeProfitPct}%`);
-  log.info(`Stop loss      : ${config.stopLossPct}%`);
-  log.info(`Priority fee   : ${config.priorityFeeLamports} lamports`);
+  log.info(`On exit        : ${config.exitBehavior === "sell" ? "sell all positions" : "keep positions (resume on restart)"}`);
   console.log("");
 
   // Production mode confirmation
   if (config.mode === "production") {
     await confirmProduction();
   } else {
-    log.paper("════════════════════════════════════════════");
-    log.paper("  PAPER MODE — No real trades will be made  ");
-    log.paper("════════════════════════════════════════════");
+    log.paper("PAPER MODE — No real trades will be made");
     console.log("");
   }
 
@@ -72,28 +73,42 @@ async function main(): Promise<void> {
 
   // Initialize modules
   const filter = new TokenFilter(config);
-  const positionManager = new PositionManager(config, trader);
+  const positionManager = new PositionManager(config, trader, db);
   const monitor = new PumpFunMonitor(config);
+
+  // Resume positions from database
+  positionManager.loadFromDb();
+
+  // Create dashboard
+  const dashboard = new Dashboard(
+    config,
+    () => positionManager.getOpenPositions(),
+    () => wallet.getBalanceSol()
+  );
 
   // Handle new tokens
   monitor.on("newToken", async (token: NewTokenEvent) => {
+    stats.recordDetected(token.name, token.symbol, token.mint);
+
     // Apply filters
     const filterResult = await filter.apply(token);
     if (!filterResult.passed) {
-      log.info(
-        `Filtered out ${token.symbol} (${token.mint.substring(0, 8)}...): ${filterResult.reason}`
+      stats.recordFiltered(
+        token.symbol,
+        filterResult.reason || "Unknown"
       );
       return;
     }
 
     // Execute buy
-    log.info(`Sniping ${token.name} (${token.symbol})...`);
+    stats.addActivity("INFO", `Sniping ${token.name} (${token.symbol})...`);
     const result = await trader.buy(token.mint, config.buyAmountSol);
 
     if (result.success) {
-      positionManager.addPosition(token.mint, result);
+      stats.recordSniped(token.name, token.symbol, config.buyAmountSol);
+      positionManager.addPosition(token.mint, result, token.name, token.symbol);
     } else {
-      log.error(`Failed to buy ${token.symbol}: ${result.error}`);
+      stats.recordError(`Buy failed: ${token.symbol} — ${result.error}`);
     }
   });
 
@@ -103,27 +118,67 @@ async function main(): Promise<void> {
   // Start listening for new tokens
   await monitor.start();
 
-  log.success("Bot is running. Press Ctrl+C to stop.");
-  console.log("");
+  log.info("Bot started successfully. Launching dashboard...");
+
+  // Small delay so startup logs are visible before dashboard takes over
+  await new Promise((r) => setTimeout(r, 2000));
+
+  // Switch to dashboard mode
+  log.setDashboardMode(true);
+  await dashboard.start();
 
   // Graceful shutdown
   const shutdown = async () => {
+    dashboard.stop();
+    log.setDashboardMode(false);
+
     console.log("");
     log.info("Shutting down...");
 
     positionManager.stopMonitoring();
     await monitor.stop();
 
+    // Handle open positions based on exit behavior
     const openPositions = positionManager.getOpenPositions();
     if (openPositions.length > 0) {
-      log.warn(`${openPositions.length} open position(s) remaining:`);
-      for (const pos of openPositions) {
-        log.warn(
-          `  ${pos.mint.substring(0, 8)}... | ${pos.tokenAmount.toFixed(0)} tokens | bought at ${pos.buyPrice.toFixed(10)}`
+      if (config.exitBehavior === "sell") {
+        log.info("EXIT_BEHAVIOR=sell — selling all open positions...");
+        await positionManager.sellAll();
+      } else {
+        log.info(
+          `${openPositions.length} position(s) saved to database — will resume on next start`
         );
+        for (const pos of openPositions) {
+          const label = pos.name || pos.mint.substring(0, 8) + "...";
+          log.info(
+            `  ${label} | ${pos.tokenAmount.toFixed(0)} tokens | bought at ${pos.buyPrice.toFixed(10)}`
+          );
+        }
       }
     }
 
+    // Print final stats
+    console.log("");
+    log.info("Session stats:");
+    log.info(`  Uptime: ${stats.getUptime()}`);
+    log.info(
+      `  Tokens seen: ${stats.tokensDetected} | Filtered: ${stats.tokensFiltered} | Sniped: ${stats.tokensSniped}`
+    );
+    const pnlSign = stats.totalPnlSol >= 0 ? "+" : "";
+    log.info(
+      `  Total P&L: ${pnlSign}${stats.totalPnlSol.toFixed(4)} SOL | Wins: ${stats.wins} | Losses: ${stats.losses}`
+    );
+
+    // Historical stats from DB
+    const tradeStats = db.getTradeCount();
+    const totalPnl = db.getTotalPnl();
+    log.info("All-time stats (from database):");
+    log.info(
+      `  Buys: ${tradeStats.buys} | Sells: ${tradeStats.sells} | Wins: ${tradeStats.wins} | Losses: ${tradeStats.losses}`
+    );
+    log.info(`  Total P&L: ${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(4)} SOL`);
+
+    db.close();
     log.info("Goodbye!");
     process.exit(0);
   };

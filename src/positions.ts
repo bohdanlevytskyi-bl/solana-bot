@@ -1,6 +1,8 @@
 import { BotConfig } from "./config";
 import { Trader, TradeResult } from "./trading";
 import { log } from "./logger";
+import { stats } from "./stats";
+import { DB } from "./db";
 
 export interface Position {
   mint: string;
@@ -9,6 +11,8 @@ export interface Position {
   buySolAmount: number;
   buyTimestamp: number;
   signature?: string;
+  name?: string;
+  symbol?: string;
 }
 
 export class PositionManager {
@@ -17,12 +21,25 @@ export class PositionManager {
 
   constructor(
     private config: BotConfig,
-    private trader: Trader
+    private trader: Trader,
+    private db: DB
   ) {}
+
+  loadFromDb(): void {
+    const saved = this.db.loadPositions();
+    for (const pos of saved) {
+      this.positions.set(pos.mint, pos);
+    }
+    if (saved.length > 0) {
+      log.info(`Resumed ${saved.length} position(s) from database`);
+    }
+  }
 
   addPosition(
     mint: string,
-    result: TradeResult
+    result: TradeResult,
+    name?: string,
+    symbol?: string
   ): void {
     if (!result.success || !result.tokenAmount || !result.price) return;
 
@@ -33,11 +50,25 @@ export class PositionManager {
       buySolAmount: result.solAmount,
       buyTimestamp: Date.now(),
       signature: result.signature,
+      name,
+      symbol,
     };
 
     this.positions.set(mint, position);
+    this.db.savePosition(position);
+    this.db.recordTrade({
+      mint,
+      type: "buy",
+      solAmount: result.solAmount,
+      tokenAmount: result.tokenAmount,
+      price: result.price,
+      signature: result.signature,
+      name,
+      symbol,
+    });
+
     log.info(
-      `Position opened: ${mint.substring(0, 8)}... | ${result.tokenAmount.toFixed(0)} tokens @ ${result.price.toFixed(10)}`
+      `Position opened: ${name || mint.substring(0, 8) + "..."} | ${result.tokenAmount.toFixed(0)} tokens @ ${result.price.toFixed(10)}`
     );
   }
 
@@ -62,26 +93,25 @@ export class PositionManager {
 
         const pnlPct =
           ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
+        const label = position.name || mint.substring(0, 8) + "...";
 
         // Take profit
         if (pnlPct >= this.config.takeProfitPct) {
-          log.info(
-            `Take profit triggered for ${mint.substring(0, 8)}... (+${pnlPct.toFixed(1)}%)`
-          );
+          log.info(`Take profit triggered for ${label} (+${pnlPct.toFixed(1)}%)`);
           await this.closePosition(mint, position);
           continue;
         }
 
         // Stop loss
         if (pnlPct <= -this.config.stopLossPct) {
-          log.warn(
-            `Stop loss triggered for ${mint.substring(0, 8)}... (${pnlPct.toFixed(1)}%)`
-          );
+          log.warn(`Stop loss triggered for ${label} (${pnlPct.toFixed(1)}%)`);
           await this.closePosition(mint, position);
           continue;
         }
       } catch (err) {
-        log.error(`Error checking position ${mint.substring(0, 8)}...: ${err}`);
+        log.error(
+          `Error checking position ${position.name || mint.substring(0, 8) + "..."}: ${err}`
+        );
       }
     }
   }
@@ -91,14 +121,39 @@ export class PositionManager {
     position: Position
   ): Promise<void> {
     const result = await this.trader.sell(mint, position.tokenAmount);
+    const label = position.name || mint.substring(0, 8) + "...";
 
     if (result.success) {
       const pnl = result.solAmount - position.buySolAmount;
       const pnlStr = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} SOL`;
-      log.sell(mint.substring(0, 8) + "...", result.solAmount.toFixed(4), pnlStr);
+      log.sell(label, result.solAmount.toFixed(4), pnlStr);
+      stats.recordSell(label, pnl);
+
+      this.db.recordTrade({
+        mint,
+        type: "sell",
+        solAmount: result.solAmount,
+        tokenAmount: position.tokenAmount,
+        price: result.price,
+        pnlSol: pnl,
+        signature: result.signature,
+        name: position.name,
+        symbol: position.symbol,
+      });
+      this.db.removePosition(mint);
       this.positions.delete(mint);
     } else {
-      log.error(`Failed to close position ${mint.substring(0, 8)}...: ${result.error}`);
+      log.error(`Failed to close position ${label}: ${result.error}`);
+    }
+  }
+
+  async sellAll(): Promise<void> {
+    const positions = Array.from(this.positions.entries());
+    if (positions.length === 0) return;
+
+    log.info(`Selling all ${positions.length} open position(s)...`);
+    for (const [mint, position] of positions) {
+      await this.closePosition(mint, position);
     }
   }
 
