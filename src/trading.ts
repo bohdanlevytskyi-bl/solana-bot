@@ -56,8 +56,14 @@ export class PaperTrader implements Trader {
   }
 
   async initialize(): Promise<void> {
-    this.virtualBalance = await this.wallet.getBalanceSol();
-    log.paper(`Virtual balance initialized: ${this.virtualBalance.toFixed(4)} SOL`);
+    const realBalance = await this.wallet.getBalanceSol();
+    if (realBalance === 0) {
+      this.virtualBalance = 1;
+      log.paper(`Wallet is empty — starting with 1 SOL virtual balance for testing`);
+    } else {
+      this.virtualBalance = realBalance;
+      log.paper(`Virtual balance initialized: ${this.virtualBalance.toFixed(4)} SOL`);
+    }
   }
 
   async buy(mint: string, solAmount: number): Promise<TradeResult> {

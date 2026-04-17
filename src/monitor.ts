@@ -9,10 +9,6 @@ const PUMP_FUN_PROGRAM = new PublicKey(
   "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 );
 
-// Pump.fun "create" instruction discriminator (first 8 bytes of sha256("global:create"))
-const CREATE_DISCRIMINATOR = Buffer.from([
-  0x18, 0x1e, 0xc8, 0x28, 0x05, 0x1c, 0x07, 0x77,
-]);
 
 export interface NewTokenEvent {
   mint: string;
@@ -90,47 +86,82 @@ export class PumpFunMonitor extends EventEmitter {
       let symbol = "???";
       let uri = "";
 
-      const instructions = tx.transaction.message.instructions;
-      for (const ix of instructions) {
+      // Collect all instructions: top-level + inner instructions
+      const allInstructions: Array<{ programId: PublicKey; data: string }> = [];
+
+      // Top-level instructions
+      for (const ix of tx.transaction.message.instructions) {
         if ("data" in ix && "programId" in ix) {
-          const rawIx = ix as { programId: PublicKey; data: string };
-          if (!rawIx.programId.equals(PUMP_FUN_PROGRAM)) continue;
+          allInstructions.push(ix as { programId: PublicKey; data: string });
+        }
+      }
 
-          try {
-            // getParsedTransaction returns instruction data as base58
-            const data = Buffer.from(bs58.decode(rawIx.data));
-            if (data.length < 16) continue;
-
-            // Skip 8-byte discriminator
-            let offset = 8;
-
-            // Read name (borsh string: u32 length + utf8 bytes)
-            if (offset + 4 > data.length) continue;
-            const nameLen = data.readUInt32LE(offset);
-            offset += 4;
-            if (offset + nameLen > data.length || nameLen > 200) continue;
-            name = data.subarray(offset, offset + nameLen).toString("utf8");
-            offset += nameLen;
-
-            // Read symbol
-            if (offset + 4 > data.length) continue;
-            const symbolLen = data.readUInt32LE(offset);
-            offset += 4;
-            if (offset + symbolLen > data.length || symbolLen > 200) continue;
-            symbol = data.subarray(offset, offset + symbolLen).toString("utf8");
-            offset += symbolLen;
-
-            // Read uri
-            if (offset + 4 > data.length) continue;
-            const uriLen = data.readUInt32LE(offset);
-            offset += 4;
-            if (offset + uriLen > data.length || uriLen > 500) continue;
-            uri = data.subarray(offset, offset + uriLen).toString("utf8");
-          } catch {
-            // Failed to parse instruction data, continue with defaults
+      // Inner instructions (where pump.fun create often lives)
+      if (tx.meta.innerInstructions) {
+        for (const inner of tx.meta.innerInstructions) {
+          for (const ix of inner.instructions) {
+            if ("data" in ix && "programId" in ix) {
+              allInstructions.push(
+                ix as { programId: PublicKey; data: string }
+              );
+            }
           }
         }
       }
+
+      // Pump.fun create instruction discriminator: d6 90 4c ec 5f 8b 31 b4
+      const PUMP_CREATE_DISC = Buffer.from([0xd6, 0x90, 0x4c, 0xec, 0x5f, 0x8b, 0x31, 0xb4]);
+
+      for (const rawIx of allInstructions) {
+        if (!rawIx.programId.equals(PUMP_FUN_PROGRAM)) continue;
+
+        try {
+          const data = Buffer.from(bs58.decode(rawIx.data));
+          if (data.length < 50) continue; // Create instructions are 100+ bytes
+
+          const disc = data.subarray(0, 8);
+          if (!disc.equals(PUMP_CREATE_DISC)) continue;
+
+          // Skip 8-byte discriminator
+          let offset = 8;
+
+          // Read name (borsh string: u32 length + utf8 bytes)
+          if (offset + 4 > data.length) continue;
+          const nameLen = data.readUInt32LE(offset);
+          offset += 4;
+          if (nameLen === 0 || nameLen > 200 || offset + nameLen > data.length)
+            continue;
+          name = data.subarray(offset, offset + nameLen).toString("utf8");
+          offset += nameLen;
+
+          // Read symbol
+          if (offset + 4 > data.length) continue;
+          const symbolLen = data.readUInt32LE(offset);
+          offset += 4;
+          if (
+            symbolLen === 0 ||
+            symbolLen > 200 ||
+            offset + symbolLen > data.length
+          )
+            continue;
+          symbol = data.subarray(offset, offset + symbolLen).toString("utf8");
+          offset += symbolLen;
+
+          // Read uri
+          if (offset + 4 > data.length) continue;
+          const uriLen = data.readUInt32LE(offset);
+          offset += 4;
+          if (offset + uriLen > data.length) continue;
+          uri = data.subarray(offset, offset + uriLen).toString("utf8");
+
+          break; // Found the create instruction, stop searching
+        } catch {
+          // Failed to parse instruction data, try next
+        }
+      }
+
+      // Only emit if we successfully parsed the create instruction
+      if (name === "Unknown" || symbol === "???") return;
 
       const event: NewTokenEvent = {
         mint,
