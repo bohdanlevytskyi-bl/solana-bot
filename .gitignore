@@ -2,6 +2,10 @@ node_modules/
 dist/
 .env
 sniper.db
+sniper.db-shm
+sniper.db-wal
+web/node_modules/
+web/dist/
 *.js.map
 *.d.ts
-!src/**/*.d.ts
+!src/**/*.d.tss

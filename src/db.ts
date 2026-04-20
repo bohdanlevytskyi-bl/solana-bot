@@ -165,6 +165,52 @@ export class DB {
     return { buys, sells, wins, losses };
   }
 
+  getTrades(limit: number = 50, offset: number = 0): Array<{
+    id: number;
+    mint: string;
+    type: string;
+    solAmount: number;
+    tokenAmount: number;
+    price: number | null;
+    pnlSol: number | null;
+    signature: string | null;
+    name: string | null;
+    symbol: string | null;
+    timestamp: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+      )
+      .all(limit, offset) as Array<{
+      id: number;
+      mint: string;
+      type: string;
+      sol_amount: number;
+      token_amount: number;
+      price: number | null;
+      pnl_sol: number | null;
+      signature: string | null;
+      name: string | null;
+      symbol: string | null;
+      timestamp: number;
+    }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      mint: r.mint,
+      type: r.type,
+      solAmount: r.sol_amount,
+      tokenAmount: r.token_amount,
+      price: r.price,
+      pnlSol: r.pnl_sol,
+      signature: r.signature,
+      name: r.name,
+      symbol: r.symbol,
+      timestamp: r.timestamp,
+    }));
+  }
+
   close(): void {
     this.db.close();
   }

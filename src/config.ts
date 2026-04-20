@@ -17,6 +17,7 @@ export interface BotConfig {
   stopLossPct: number;
   priorityFeeLamports: number;
   exitBehavior: ExitBehavior;
+  dashboardPort: number;
 }
 
 function requireEnv(key: string): string {
@@ -71,5 +72,6 @@ export function loadConfig(): BotConfig {
       10
     ),
     exitBehavior,
+    dashboardPort: parseInt(process.env.DASHBOARD_PORT || "3001", 10),
   };
 }

@@ -5,7 +5,7 @@ import { PumpFunMonitor, NewTokenEvent } from "./monitor";
 import { TokenFilter } from "./filters";
 import { createTrader, PaperTrader } from "./trading";
 import { PositionManager } from "./positions";
-import { Dashboard } from "./dashboard";
+import { startApiServer } from "./api";
 import { stats } from "./stats";
 import { DB } from "./db";
 import * as readline from "readline";
@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   // Initialize database
   const db = new DB();
 
-  // Display startup banner (before dashboard takes over)
+  // Display startup banner
   log.banner([
     "╔══════════════════════════════════════════╗",
     "║       Pump.fun Sniper Bot v1.0.0         ║",
@@ -79,13 +79,6 @@ async function main(): Promise<void> {
   // Resume positions from database
   positionManager.loadFromDb();
 
-  // Create dashboard
-  const dashboard = new Dashboard(
-    config,
-    () => positionManager.getOpenPositions(),
-    () => wallet.getBalanceSol()
-  );
-
   // Handle new tokens
   monitor.on("newToken", async (token: NewTokenEvent) => {
     stats.recordDetected(token.name, token.symbol, token.mint);
@@ -101,7 +94,7 @@ async function main(): Promise<void> {
     }
 
     // Execute buy
-    stats.addActivity("INFO", `Sniping ${token.name} (${token.symbol})...`);
+    log.info(`Sniping ${token.name} (${token.symbol})...`);
     const result = await trader.buy(token.mint, config.buyAmountSol);
 
     if (result.success) {
@@ -109,6 +102,7 @@ async function main(): Promise<void> {
       positionManager.addPosition(token.mint, result, token.name, token.symbol);
     } else {
       stats.recordError(`Buy failed: ${token.symbol} — ${result.error}`);
+      log.error(`Failed to buy ${token.symbol}: ${result.error}`);
     }
   });
 
@@ -118,23 +112,18 @@ async function main(): Promise<void> {
   // Start listening for new tokens
   await monitor.start();
 
-  log.info("Bot started successfully. Launching dashboard...");
+  // Start web dashboard API server
+  const server = startApiServer({ config, positionManager, wallet, db });
 
-  // Small delay so startup logs are visible before dashboard takes over
-  await new Promise((r) => setTimeout(r, 2000));
-
-  // Switch to dashboard mode
-  log.setDashboardMode(true);
-  await dashboard.start();
+  log.success("Bot is running. Press Ctrl+C to stop.");
+  console.log("");
 
   // Graceful shutdown
   const shutdown = async () => {
-    dashboard.stop();
-    log.setDashboardMode(false);
-
     console.log("");
     log.info("Shutting down...");
 
+    server.close();
     positionManager.stopMonitoring();
     await monitor.stop();
 
