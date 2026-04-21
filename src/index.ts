@@ -58,6 +58,9 @@ async function main(): Promise<void> {
   log.info(`Execution mode : ${config.mode.toUpperCase()}`);
   log.info(`Sniping mode   : ${config.snipeMode}`);
   log.info(`Buy amount     : ${config.buyAmountSol} SOL`);
+  log.info(
+    `Run budget     : ${config.maxSpendSol === null ? "unlimited" : `${config.maxSpendSol} SOL`}`
+  );
   log.info(`On exit        : ${config.exitBehavior === "sell" ? "sell all positions" : "keep positions (resume on restart)"}`);
   console.log("");
 
@@ -89,8 +92,41 @@ async function main(): Promise<void> {
   positionManager.loadFromDb();
 
   // Handle new tokens
+  let lowBalanceWarned = false;
+  let budgetWarned = false;
+  let totalSpentSol = 0;
   monitor.on("newToken", async (token: NewTokenEvent) => {
     stats.recordDetected(token.name, token.symbol, token.mint);
+
+    // Enforce per-run spend cap
+    if (
+      config.maxSpendSol !== null &&
+      totalSpentSol + config.buyAmountSol > config.maxSpendSol
+    ) {
+      if (!budgetWarned) {
+        log.warn(
+          `Run budget reached (${totalSpentSol.toFixed(4)} / ${config.maxSpendSol} SOL). No more buys this run; monitoring open positions only.`
+        );
+        budgetWarned = true;
+      }
+      return;
+    }
+
+    // Skip when balance can't cover a buy (suppress repeated warnings)
+    const balance = await trader.getAvailableBalance();
+    if (balance < config.buyAmountSol) {
+      if (!lowBalanceWarned) {
+        log.warn(
+          `Insufficient balance (${balance.toFixed(4)} SOL < ${config.buyAmountSol} SOL). Skipping buys until a sell replenishes funds.`
+        );
+        lowBalanceWarned = true;
+      }
+      return;
+    }
+    if (lowBalanceWarned) {
+      log.info(`Balance recovered (${balance.toFixed(4)} SOL) — resuming buys`);
+      lowBalanceWarned = false;
+    }
 
     // Apply filters
     const filterResult = await filter.apply(token);
@@ -109,6 +145,7 @@ async function main(): Promise<void> {
     if (result.success) {
       stats.recordSniped(token.name, token.symbol, config.buyAmountSol);
       positionManager.addPosition(token.mint, result, token.name, token.symbol);
+      totalSpentSol += result.solAmount;
     } else {
       stats.recordError(`Buy failed: ${token.symbol} — ${result.error}`);
       log.error(`Failed to buy ${token.symbol}: ${result.error}`);

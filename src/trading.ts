@@ -35,6 +35,7 @@ export interface Trader {
   buy(mint: string, solAmount: number): Promise<TradeResult>;
   sell(mint: string, tokenAmount: number): Promise<TradeResult>;
   getTokenPrice(mint: string): Promise<number | null>;
+  getAvailableBalance(): Promise<number>;
 }
 
 // =============================================================================
@@ -175,6 +176,10 @@ export class PaperTrader implements Trader {
     const priceChange = 1 + (Math.random() * 0.4 - 0.15); // -15% to +25%
     return lastTrade.price * priceChange;
   }
+
+  async getAvailableBalance(): Promise<number> {
+    return this.virtualBalance;
+  }
 }
 
 // =============================================================================
@@ -314,6 +319,14 @@ export class LiveTrader implements Trader {
       return price;
     } catch {
       return null;
+    }
+  }
+
+  async getAvailableBalance(): Promise<number> {
+    try {
+      return await this.wallet.getBalanceSol();
+    } catch {
+      return 0;
     }
   }
 

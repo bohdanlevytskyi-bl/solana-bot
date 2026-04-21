@@ -18,6 +18,7 @@ export interface BotConfig {
   priorityFeeLamports: number;
   exitBehavior: ExitBehavior;
   dashboardPort: number;
+  maxSpendSol: number | null;
 }
 
 function requireEnv(key: string): string {
@@ -73,5 +74,12 @@ export function loadConfig(): BotConfig {
     ),
     exitBehavior,
     dashboardPort: parseInt(process.env.DASHBOARD_PORT || "3001", 10),
+    maxSpendSol: (() => {
+      const raw = process.env.MAX_SPEND_SOL;
+      if (!raw || raw === "") return null;
+      const n = parseFloat(raw);
+      if (!isFinite(n) || n <= 0) return null;
+      return n;
+    })(),
   };
 }
