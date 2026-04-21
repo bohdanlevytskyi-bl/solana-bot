@@ -39,6 +39,15 @@ async function main(): Promise<void> {
   // Initialize database
   const db = new DB();
 
+  // Seed stats from DB so P&L / wins / losses / sniped persist across restarts
+  const counts = db.getTradeCount();
+  stats.hydrate({
+    pnl: db.getTotalPnl(),
+    wins: counts.wins,
+    losses: counts.losses,
+    sniped: counts.buys,
+  });
+
   // Display startup banner
   log.banner([
     "╔══════════════════════════════════════════╗",
@@ -68,7 +77,7 @@ async function main(): Promise<void> {
   // Initialize trader (paper or live)
   const trader = createTrader(config, wallet);
   if (trader instanceof PaperTrader) {
-    await trader.initialize();
+    await trader.initialize(db);
   }
 
   // Initialize modules

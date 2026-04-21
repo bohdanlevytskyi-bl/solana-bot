@@ -18,6 +18,13 @@ class Stats {
   private activityLog: ActivityEntry[] = [];
   private maxActivity = 15;
 
+  hydrate(seed: { pnl: number; wins: number; losses: number; sniped: number }): void {
+    this.totalPnlSol = seed.pnl;
+    this.wins = seed.wins;
+    this.losses = seed.losses;
+    this.tokensSniped = seed.sniped;
+  }
+
   addActivity(type: ActivityType, message: string): void {
     const time = new Date().toISOString().substring(11, 19);
     this.activityLog.push({ time, type, message });

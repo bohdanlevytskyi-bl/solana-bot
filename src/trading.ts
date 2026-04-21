@@ -10,6 +10,7 @@ import {
 import { BotConfig } from "./config";
 import { Wallet } from "./wallet";
 import { log } from "./logger";
+import type { DB } from "./db";
 
 // Pump.fun program
 const PUMP_FUN_PROGRAM = new PublicKey(
@@ -55,7 +56,7 @@ export class PaperTrader implements Trader {
     this.virtualBalance = 0; // will be set from actual wallet balance
   }
 
-  async initialize(): Promise<void> {
+  async initialize(db?: DB): Promise<void> {
     const realBalance = await this.wallet.getBalanceSol();
     if (realBalance === 0) {
       this.virtualBalance = 1;
@@ -63,6 +64,26 @@ export class PaperTrader implements Trader {
     } else {
       this.virtualBalance = realBalance;
       log.paper(`Virtual balance initialized: ${this.virtualBalance.toFixed(4)} SOL`);
+    }
+
+    if (db) {
+      const historical = db.getTrades(100000, 0);
+      let loaded = 0;
+      for (const t of historical) {
+        if (t.price === null) continue;
+        this.trades.push({
+          type: t.type as "buy" | "sell",
+          mint: t.mint,
+          solAmount: t.solAmount,
+          tokenAmount: t.tokenAmount,
+          price: t.price,
+          timestamp: t.timestamp,
+        });
+        loaded++;
+      }
+      if (loaded > 0) {
+        log.paper(`Loaded ${loaded} historical paper trades for price baselines`);
+      }
     }
   }
 

@@ -26,7 +26,7 @@ export function StatsPanel({ stats }: Props) {
         <span className={`stat-value ${pnlClass}`}>
           {pnlSign}{stats.totalPnlSol.toFixed(4)}
         </span>
-        <span className="stat-label">P&L (SOL)</span>
+        <span className="stat-label">P&L (all time)</span>
       </div>
       <div className="stat-card">
         <span className="stat-value green">{stats.wins}</span>
