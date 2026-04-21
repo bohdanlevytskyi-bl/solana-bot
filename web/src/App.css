@@ -207,6 +207,30 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+/* Sell button */
+.sell-btn {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.sell-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+.sell-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Colors */
 .cyan { color: #06b6d4; }
 .green { color: #22c55e; }

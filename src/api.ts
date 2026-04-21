@@ -24,6 +24,8 @@ export function startApiServer(deps: ApiDeps): http.Server {
   // WebSocket server
   const wss = new WebSocketServer({ server, path: "/ws" });
 
+  app.use(express.json());
+
   // Serve built frontend
   const webDist = path.join(process.cwd(), "web", "dist");
   app.use(express.static(webDist));
@@ -56,6 +58,16 @@ export function startApiServer(deps: ApiDeps): http.Server {
 
   app.get("/api/positions", (_req, res) => {
     res.json(positionManager.getOpenPositions());
+  });
+
+  app.post("/api/positions/:mint/sell", async (req, res) => {
+    const { mint } = req.params;
+    const result = await positionManager.sellPosition(mint);
+    if (result.success) {
+      res.json({ success: true });
+    } else {
+      res.status(400).json({ success: false, error: result.error });
+    }
   });
 
   app.get("/api/balance", async (_req, res) => {

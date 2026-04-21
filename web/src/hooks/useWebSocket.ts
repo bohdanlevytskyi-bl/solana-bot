@@ -9,6 +9,8 @@ export interface Position {
   signature?: string;
   name?: string;
   symbol?: string;
+  currentPrice?: number;
+  priceUpdatedAt?: number;
 }
 
 export interface ActivityEntry {

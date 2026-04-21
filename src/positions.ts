@@ -13,11 +13,14 @@ export interface Position {
   signature?: string;
   name?: string;
   symbol?: string;
+  currentPrice?: number;
+  priceUpdatedAt?: number;
 }
 
 export class PositionManager {
   private positions: Map<string, Position> = new Map();
   private pollInterval: ReturnType<typeof setInterval> | null = null;
+  private selling: Set<string> = new Set();
 
   constructor(
     private config: BotConfig,
@@ -87,9 +90,13 @@ export class PositionManager {
 
   private async checkPositions(): Promise<void> {
     for (const [mint, position] of this.positions) {
+      if (this.selling.has(mint)) continue;
       try {
         const currentPrice = await this.trader.getTokenPrice(mint);
         if (currentPrice === null) continue;
+
+        position.currentPrice = currentPrice;
+        position.priceUpdatedAt = Date.now();
 
         const pnlPct =
           ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
@@ -113,6 +120,20 @@ export class PositionManager {
           `Error checking position ${position.name || mint.substring(0, 8) + "..."}: ${err}`
         );
       }
+    }
+  }
+
+  async sellPosition(mint: string): Promise<{ success: boolean; error?: string }> {
+    const position = this.positions.get(mint);
+    if (!position) return { success: false, error: "Position not found" };
+    if (this.selling.has(mint)) return { success: false, error: "Sell already in progress" };
+
+    this.selling.add(mint);
+    try {
+      await this.closePosition(mint, position);
+      return { success: true };
+    } finally {
+      this.selling.delete(mint);
     }
   }
 
