@@ -76,9 +76,9 @@ export function loadConfig(): BotConfig {
     dashboardPort: parseInt(process.env.DASHBOARD_PORT || "3001", 10),
     maxSpendSol: (() => {
       const raw = process.env.MAX_SPEND_SOL;
-      if (!raw || raw === "") return null;
+      if (raw === undefined || raw === "") return null;
       const n = parseFloat(raw);
-      if (!isFinite(n) || n <= 0) return null;
+      if (!isFinite(n) || n < 0) return null;
       return n;
     })(),
   };
