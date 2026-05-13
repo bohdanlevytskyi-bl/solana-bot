@@ -3,7 +3,7 @@ import { log } from "./logger";
 import { Wallet } from "./wallet";
 import { PumpFunMonitor, NewTokenEvent } from "./monitor";
 import { TokenFilter } from "./filters";
-import { createTrader, PaperTrader } from "./trading";
+import { createTrader, PaperTrader, LiveTrader } from "./trading";
 import { PositionManager } from "./positions";
 import { startApiServer } from "./api";
 import { stats } from "./stats";
@@ -81,6 +81,9 @@ async function main(): Promise<void> {
   const trader = createTrader(config, wallet);
   if (trader instanceof PaperTrader) {
     await trader.initialize(db);
+  }
+  if (trader instanceof LiveTrader) {
+    await trader.debugReferenceSell();
   }
 
   // Initialize modules

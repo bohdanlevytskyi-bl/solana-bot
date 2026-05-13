@@ -19,6 +19,7 @@ export interface BotConfig {
   exitBehavior: ExitBehavior;
   dashboardPort: number;
   maxSpendSol: number | null;
+  maxHoldMinutes: number | null;
 }
 
 function requireEnv(key: string): string {
@@ -79,6 +80,13 @@ export function loadConfig(): BotConfig {
       if (raw === undefined || raw === "") return null;
       const n = parseFloat(raw);
       if (!isFinite(n) || n < 0) return null;
+      return n;
+    })(),
+    maxHoldMinutes: (() => {
+      const raw = process.env.MAX_HOLD_MINUTES;
+      if (raw === undefined || raw === "") return null;
+      const n = parseFloat(raw);
+      if (!isFinite(n) || n <= 0) return null;
       return n;
     })(),
   };

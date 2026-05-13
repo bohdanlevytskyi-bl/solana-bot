@@ -21,6 +21,8 @@ export class PositionManager {
   private positions: Map<string, Position> = new Map();
   private pollInterval: ReturnType<typeof setInterval> | null = null;
   private selling: Set<string> = new Set();
+  private sellFailures: Map<string, number> = new Map();
+  private static readonly MAX_SELL_FAILURES = 5;
 
   constructor(
     private config: BotConfig,
@@ -89,18 +91,50 @@ export class PositionManager {
   }
 
   private async checkPositions(): Promise<void> {
+    if (this.positions.size === 0) {
+      log.debug(`[POLL] No open positions`);
+      return;
+    }
+
     for (const [mint, position] of this.positions) {
       if (this.selling.has(mint)) continue;
+      const label = position.name || mint.substring(0, 8) + "...";
       try {
         const currentPrice = await this.trader.getTokenPrice(mint);
-        if (currentPrice === null) continue;
 
+        if (currentPrice === null) {
+          log.debug(`[POLL] ${label}: price fetch returned null — skipping`);
+          continue;
+        }
+
+        const prevPrice = position.currentPrice;
         position.currentPrice = currentPrice;
         position.priceUpdatedAt = Date.now();
 
+        const currentValue = currentPrice * position.tokenAmount;
+        const pnlSol = currentValue - position.buySolAmount;
         const pnlPct =
-          ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
-        const label = position.name || mint.substring(0, 8) + "...";
+          position.buySolAmount > 0
+            ? (pnlSol / position.buySolAmount) * 100
+            : 0;
+        const ageMinutes = (Date.now() - position.buyTimestamp) / 60_000;
+        const priceChange =
+          prevPrice && prevPrice > 0
+            ? ((currentPrice - prevPrice) / prevPrice) * 100
+            : 0;
+
+        log.debug(
+          `[POLL] ${label} | price=${currentPrice.toExponential(3)}` +
+          ` (${priceChange >= 0 ? "+" : ""}${priceChange.toFixed(2)}% vs last poll)` +
+          ` | P&L=${pnlSol >= 0 ? "+" : ""}${pnlSol.toFixed(4)} SOL (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)` +
+          ` | age=${ageMinutes.toFixed(1)}min` +
+          ` | TP@+${this.config.takeProfitPct}% SL@-${this.config.stopLossPct}%` +
+          (this.config.maxHoldMinutes ? ` hold@${this.config.maxHoldMinutes}min` : "")
+        );
+
+        // Skip auto-sell if too many consecutive failures
+        const failures = this.sellFailures.get(mint) ?? 0;
+        if (failures >= PositionManager.MAX_SELL_FAILURES) continue;
 
         // Take profit
         if (pnlPct >= this.config.takeProfitPct) {
@@ -115,12 +149,30 @@ export class PositionManager {
           await this.closePosition(mint, position);
           continue;
         }
+
+        // Max hold time
+        if (this.config.maxHoldMinutes !== null) {
+          if (ageMinutes >= this.config.maxHoldMinutes) {
+            log.warn(`Max hold time reached for ${label} (${ageMinutes.toFixed(1)}min, ${pnlPct.toFixed(1)}%)`);
+            await this.closePosition(mint, position);
+            continue;
+          }
+        }
       } catch (err) {
-        log.error(
-          `Error checking position ${position.name || mint.substring(0, 8) + "..."}: ${err}`
-        );
+        log.error(`Error checking position ${label}: ${err}`);
       }
     }
+  }
+
+  private recordSellFailure(mint: string, label: string): boolean {
+    const failures = (this.sellFailures.get(mint) ?? 0) + 1;
+    this.sellFailures.set(mint, failures);
+    if (failures >= PositionManager.MAX_SELL_FAILURES) {
+      log.error(`[SELL] ${label}: ${failures} consecutive failures — pausing auto-sell. Use manual sell button or restart bot.`);
+      return true; // caller should stop retrying
+    }
+    log.warn(`[SELL] ${label}: failure ${failures}/${PositionManager.MAX_SELL_FAILURES}`);
+    return false;
   }
 
   async sellPosition(mint: string): Promise<{ success: boolean; error?: string }> {
@@ -145,6 +197,7 @@ export class PositionManager {
     const label = position.name || mint.substring(0, 8) + "...";
 
     if (result.success) {
+      this.sellFailures.delete(mint);
       const pnl = result.solAmount - position.buySolAmount;
       const pnlStr = `${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)} SOL`;
       log.sell(label, result.solAmount.toFixed(4), pnlStr);
@@ -165,6 +218,7 @@ export class PositionManager {
       this.positions.delete(mint);
     } else {
       log.error(`Failed to close position ${label}: ${result.error}`);
+      this.recordSellFailure(mint, label);
     }
   }
 

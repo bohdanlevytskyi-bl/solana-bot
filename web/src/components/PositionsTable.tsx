@@ -5,6 +5,13 @@ interface Props {
   positions: Position[];
 }
 
+function formatPrice(price: number): string {
+  if (price === 0 || !isFinite(price)) return "0";
+  if (price < 1e-6) return price.toExponential(3);
+  if (price < 0.001) return price.toFixed(10);
+  return price.toFixed(6);
+}
+
 function formatAge(timestamp: number): string {
   const ms = Date.now() - timestamp;
   const seconds = Math.floor(ms / 1000) % 60;
@@ -67,9 +74,10 @@ export function PositionsTable({ positions }: Props) {
               const pnlSol = hasPrice
                 ? current * pos.tokenAmount - pos.buySolAmount
                 : null;
-              const pnlPct = hasPrice
-                ? ((current - pos.buyPrice) / pos.buyPrice) * 100
-                : null;
+              const pnlPct =
+                pnlSol !== null && pos.buySolAmount > 0
+                  ? (pnlSol / pos.buySolAmount) * 100
+                  : null;
               const currentValue = hasPrice
                 ? current * pos.tokenAmount
                 : null;
@@ -81,10 +89,10 @@ export function PositionsTable({ positions }: Props) {
                 <tr key={pos.mint}>
                   <td className="token-name">{pos.name || pos.symbol || "???"}</td>
                   <td className="mono">{pos.mint.substring(0, 8)}...</td>
-                  <td>{pos.tokenAmount.toFixed(0)}</td>
-                  <td className="mono">{pos.buyPrice.toFixed(10)}</td>
+                  <td>{(pos.tokenAmount / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                  <td className="mono">{formatPrice(pos.buyPrice * 1_000_000)}</td>
                   <td className="mono">
-                    {hasPrice ? current.toFixed(10) : "…"}
+                    {hasPrice ? formatPrice(current * 1_000_000) : "…"}
                   </td>
                   <td className={pnlClass}>
                     {pnlSol === null

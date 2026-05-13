@@ -218,6 +218,45 @@ export class PaperTrader implements Trader {
 // =============================================================================
 
 export class LiveTrader implements Trader {
+  // Fetches a recent successful pump.fun sell from chain and logs its exact
+  // discriminator, data length, and account count so we can compare with ours.
+  async debugReferenceSell(): Promise<void> {
+    const SELL_DISC = Buffer.from([0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad]);
+    try {
+      const sigs = await this.connection.getSignaturesForAddress(PUMP_FUN_PROGRAM, { limit: 200 });
+      for (const sig of sigs) {
+        const tx = await this.connection.getParsedTransaction(sig.signature, {
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        });
+        if (!tx || tx.meta?.err) continue;
+        const allIxs = [
+          ...tx.transaction.message.instructions,
+          ...(tx.meta?.innerInstructions?.flatMap((ii) => ii.instructions) ?? []),
+        ];
+        for (const ix of allIxs) {
+          if (!("data" in ix) || !("programId" in ix)) continue;
+          if (!(ix.programId as PublicKey).equals(PUMP_FUN_PROGRAM)) continue;
+          let raw: Buffer;
+          try {
+            const bs58 = await import("bs58");
+            raw = Buffer.from(bs58.default.decode(ix.data as string));
+          } catch { continue; }
+          if (raw.length < 8) continue;
+          if (!raw.subarray(0, 8).equals(SELL_DISC)) continue;
+          const keys = (ix as any).accounts as PublicKey[] | undefined;
+          log.debug(`[REF SELL] tx=${sig.signature.substring(0, 12)}...`);
+          log.debug(`[REF SELL] data bytes=${raw.length} hex=${raw.toString("hex")}`);
+          log.debug(`[REF SELL] accounts=${keys?.length ?? "?"}`);
+          if (keys) keys.forEach((k, i) => log.debug(`[REF SELL]   [${i}] ${k.toBase58()}`));
+          return;
+        }
+      }
+      log.debug(`[REF SELL] No recent sell found in last 200 txs`);
+    } catch (err) {
+      log.debug(`[REF SELL] fetch failed: ${err}`);
+    }
+  }
   private connection: Connection;
   private cachedFeeRecipient: PublicKey | null = null;
 
@@ -262,10 +301,6 @@ export class LiveTrader implements Trader {
       info.data.length >= 81
         ? new PublicKey(info.data.slice(49, 49 + 32))
         : null;
-    log.info(
-      `BondingCurve len=${info.data.length} creator=${creator?.toBase58() ?? "none"} ` +
-      `creatorVault=${creator ? PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creator.toBuffer()], PUMP_FUN_PROGRAM)[0].toBase58() : "none"}`
-    );
     return {
       bondingCurve,
       virtualTokenReserves: info.data.readBigUInt64LE(8),
@@ -411,7 +446,8 @@ export class LiveTrader implements Trader {
       log.buy(mint.substring(0, 8) + "...", solAmount.toString(), signature.substring(0, 10));
 
       const tokensNum = Number(expectedTokens);
-      const pricePerToken = Number(solLamports) / tokensNum / LAMPORTS_PER_SOL;
+      // Use bonding curve spot price (same formula as getTokenPrice) so P&L comparison is consistent
+      const pricePerToken = Number(reserves.virtualSolReserves) / Number(reserves.virtualTokenReserves) / LAMPORTS_PER_SOL;
 
       return {
         success: true,
@@ -484,15 +520,13 @@ export class LiveTrader implements Trader {
         };
       }
 
-      // Constant-product AMM: sol_out = (tokens_in * vsr) / (vtr + tokens_in)
+      // Estimate sol_out for return value only (not used as on-chain floor).
+      // minSolOutput = 0: pump.fun checks sol_out.checked_sub(min) in u64, which overflows
+      // when reserves shift between our read and tx execution making min > actual sol_out.
       const expectedSol =
         (onChainTokens * reserves.virtualSolReserves) /
         (reserves.virtualTokenReserves + onChainTokens);
-      const slippageBps = BigInt(
-        Math.max(0, Math.floor(this.config.slippagePct * 100))
-      );
-      const minSolOutput =
-        (expectedSol * (BigInt(10000) - slippageBps)) / BigInt(10000);
+      const minSolOutput = BigInt(0);
 
       const feeRecipient = await this.getFeeRecipient();
       const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
@@ -505,11 +539,6 @@ export class LiveTrader implements Trader {
       }
       const creatorVault = this.creatorVaultPda(reserves.creator);
 
-      const [bondingCurveV2] = PublicKey.findProgramAddressSync(
-        [Buffer.from("bonding-curve-v2"), mintPk.toBuffer()],
-        PUMP_FUN_PROGRAM
-      );
-
       // Sell instruction data: discriminator + amount(u64) + minSolOutput(u64)
       const sellDisc = Buffer.from([0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad]);
       const data = Buffer.alloc(24);
@@ -517,10 +546,12 @@ export class LiveTrader implements Trader {
       data.writeBigUInt64LE(onChainTokens, 8);
       data.writeBigUInt64LE(minSolOutput, 16);
 
-      // Sell account layout (verified from on-chain txs):
+      const userVolumeAccumulator = userVolumeAccumulatorPda(this.wallet.publicKey);
+
+      // Sell account layout (15 accounts) — verified against live pump.fun transactions:
       // 0:global 1:feeRecipient 2:mint 3:bondingCurve 4:associatedBondingCurve
       // 5:associatedUser 6:user 7:system 8:creatorVault 9:tokenProgram
-      // 10:eventAuthority 11:pumpProgram 12:feeConfig 13:feeProgram 14:bondingCurveV2
+      // 10:eventAuthority 11:pumpProgram 12:feeConfig 13:feeProgram 14:userVolumeAccumulator
       const sellIx = new TransactionInstruction({
         programId: PUMP_FUN_PROGRAM,
         keys: [
@@ -538,7 +569,7 @@ export class LiveTrader implements Trader {
           { pubkey: PUMP_FUN_PROGRAM, isSigner: false, isWritable: false },
           { pubkey: FEE_CONFIG_PDA, isSigner: false, isWritable: false },
           { pubkey: FEE_PROGRAM, isSigner: false, isWritable: false },
-          { pubkey: bondingCurveV2, isSigner: false, isWritable: false },
+          { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
         ],
         data,
       });
@@ -582,9 +613,11 @@ export class LiveTrader implements Trader {
       if (!reserves || reserves.virtualTokenReserves === BigInt(0)) return null;
       return (
         Number(reserves.virtualSolReserves) /
-        Number(reserves.virtualTokenReserves)
+        Number(reserves.virtualTokenReserves) /
+        LAMPORTS_PER_SOL
       );
-    } catch {
+    } catch (err) {
+      log.error(`getTokenPrice failed for ${mint.substring(0, 8)}: ${err}`);
       return null;
     }
   }

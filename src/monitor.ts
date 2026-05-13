@@ -23,6 +23,9 @@ export interface NewTokenEvent {
 export class PumpFunMonitor extends EventEmitter {
   private connection: Connection;
   private subscriptionId: number | null = null;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private txSeen = 0;
+  private tokensEmitted = 0;
 
   constructor(private config: BotConfig) {
     super();
@@ -39,10 +42,17 @@ export class PumpFunMonitor extends EventEmitter {
     this.subscriptionId = this.connection.onLogs(
       PUMP_FUN_PROGRAM,
       (logInfo: Logs) => {
+        this.txSeen++;
         this.handleLog(logInfo);
       },
       "confirmed"
     );
+
+    // Heartbeat every 60s — confirms WS is alive and shows activity
+    this.heartbeatInterval = setInterval(() => {
+      log.debug(`[MONITOR] Heartbeat — txs seen last 60s: ${this.txSeen} | tokens emitted total: ${this.tokensEmitted}`);
+      this.txSeen = 0;
+    }, 60_000);
 
     log.success("Monitor connected — listening for new tokens");
   }
@@ -173,6 +183,7 @@ export class PumpFunMonitor extends EventEmitter {
         timestamp: Date.now(),
       };
 
+      this.tokensEmitted++;
       log.newToken(event.name, event.symbol, event.mint);
       this.emit("newToken", event);
     } catch (err) {
@@ -181,6 +192,10 @@ export class PumpFunMonitor extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
     if (this.subscriptionId !== null) {
       await this.connection.removeOnLogsListener(this.subscriptionId);
       this.subscriptionId = null;

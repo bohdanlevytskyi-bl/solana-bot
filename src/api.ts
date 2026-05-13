@@ -70,13 +70,8 @@ export function startApiServer(deps: ApiDeps): http.Server {
     }
   });
 
-  app.get("/api/balance", async (_req, res) => {
-    try {
-      const balance = await wallet.getBalanceSol();
-      res.json({ balance });
-    } catch {
-      res.json({ balance: 0 });
-    }
+  app.get("/api/balance", (_req, res) => {
+    res.json({ balance: cachedBalance });
   });
 
   app.get("/api/trades", (req, res) => {
@@ -95,6 +90,14 @@ export function startApiServer(deps: ApiDeps): http.Server {
     res.sendFile(path.join(webDist, "index.html"));
   });
 
+  // Cache balance — refresh every 30s to avoid burning RPC quota
+  let cachedBalance = 0;
+  async function refreshBalance() {
+    try { cachedBalance = await wallet.getBalanceSol(); } catch { /* keep last */ }
+  }
+  refreshBalance();
+  const balanceInterval = setInterval(refreshBalance, 30_000);
+
   // WebSocket: push updates every 2 seconds
   let wsInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -103,14 +106,7 @@ export function startApiServer(deps: ApiDeps): http.Server {
     sendUpdate(ws);
   });
 
-  async function buildUpdate() {
-    let balance = 0;
-    try {
-      balance = await wallet.getBalanceSol();
-    } catch {
-      // keep 0
-    }
-
+  function buildUpdate() {
     return {
       stats: {
         tokensDetected: stats.tokensDetected,
@@ -122,7 +118,7 @@ export function startApiServer(deps: ApiDeps): http.Server {
         uptime: stats.getUptime(),
       },
       positions: positionManager.getOpenPositions(),
-      balance,
+      balance: cachedBalance,
       activity: stats.getRecentActivity(),
       config: {
         mode: config.mode,
@@ -134,19 +130,17 @@ export function startApiServer(deps: ApiDeps): http.Server {
     };
   }
 
-  async function sendUpdate(ws: WebSocket) {
+  function sendUpdate(ws: WebSocket) {
     if (ws.readyState !== WebSocket.OPEN) return;
     try {
-      const data = await buildUpdate();
-      ws.send(JSON.stringify(data));
+      ws.send(JSON.stringify(buildUpdate()));
     } catch {
       // ignore send errors
     }
   }
 
-  async function broadcastUpdate() {
-    const data = await buildUpdate();
-    const msg = JSON.stringify(data);
+  function broadcastUpdate() {
+    const msg = JSON.stringify(buildUpdate());
     wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(msg);
@@ -164,6 +158,7 @@ export function startApiServer(deps: ApiDeps): http.Server {
   // Cleanup on server close
   server.on("close", () => {
     if (wsInterval) clearInterval(wsInterval);
+    clearInterval(balanceInterval);
     wss.close();
   });
 

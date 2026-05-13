@@ -89,6 +89,11 @@ export const log = {
     );
   },
 
+  // Always prints — use for diagnostics that must show even in dashboard mode
+  debug(msg: string) {
+    console.log(`${GRAY}[${timestamp()}]${RESET} ${CYAN}DBG${RESET}   ${msg}`);
+  },
+
   banner(lines: string[]) {
     if (dashboardActive) return;
     console.log("");
